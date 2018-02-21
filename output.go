@@ -21,60 +21,64 @@ import (
 	"strings"
 )
 
-func resultHandler() {
-	for result := range global.resultsChan {
-		if options.TargetsOnly {
+func (s *Search) resultHandler() {
+	for result := range s.resultsChan {
+		if s.options.TargetsOnly {
 			fmt.Println(result.target)
 			continue
 		}
-		global.totalTargetCount++
-		result.applyConditions()
-		printResult(result)
+		s.totalTargetCount++
+		s.applyConditions(result)
+		s.printResult(result)
 	}
-	global.resultsDoneChan <- struct{}{}
+	s.resultsDoneChan <- struct{}{}
 }
 
-func writeOutput(format string, a ...interface{}) {
+func (s *Search) writeOutput(format string, a ...interface{}) {
 	output := fmt.Sprintf(format, a...)
-	_, err := global.outputFile.Write([]byte(output))
+	_, err := s.outputFile.Write([]byte(output))
 	if err != nil {
-		errorLogger.Fatalln("cannot write to output file:", err)
+		s.errorLogger.Fatalln("cannot write to output file:", err)
 	}
 }
 
-func printFilename(filename string, delim string) {
+func (s *Search) printFilename(filename string, delim string) {
+	var options = s.options
 	if options.ShowFilename == "on" && !options.GroupByFile {
 		if options.OutputUnixPath {
 			filename = filepath.ToSlash(filename)
 		}
-		writeOutput(global.termHighlightFilename+"%s"+global.termHighlightReset+delim, filename)
+		s.writeOutput(s.termHighlightFilename+"%s"+s.termHighlightReset+delim, filename)
 	}
 }
 
-func printLineno(lineno int64, delim string) {
-	if options.ShowLineNumbers {
-		writeOutput(global.termHighlightLineno+"%d"+global.termHighlightReset+delim, lineno)
+func (s *Search) printLineno(lineno int64, delim string) {
+	if s.options.ShowLineNumbers {
+		s.writeOutput(s.termHighlightLineno+"%d"+s.termHighlightReset+delim, lineno)
 	}
 }
 
-func printColumnNo(m *Match) {
+func (s *Search) printColumnNo(m *Match) {
+	var options = s.options
 	if options.ShowColumnNumbers {
-		writeOutput("%d"+options.FieldSeparator, m.start-m.lineStart+1)
+		s.writeOutput("%d"+options.FieldSeparator, m.start-m.lineStart+1)
 	}
 }
 
-func printByteOffset(m *Match) {
+func (s *Search) printByteOffset(m *Match) {
+	var options = s.options
 	if options.ShowByteOffset {
 		if options.OnlyMatching {
-			writeOutput("%d"+options.FieldSeparator, m.start)
+			s.writeOutput("%d"+options.FieldSeparator, m.start)
 		} else {
-			writeOutput("%d"+options.FieldSeparator, m.lineStart)
+			s.writeOutput("%d"+options.FieldSeparator, m.lineStart)
 		}
 	}
 }
 
 // printMatch prints the context after the previous match, the context before the match and the match itself
-func printMatch(match Match, lastMatch Match, target string, lastPrintedLine *int64) {
+func (s *Search) printMatch(match Match, lastMatch Match, target string, lastPrintedLine *int64) {
+	var options = s.options
 	var matchOutput = match.line
 
 	if !options.InvertMatch {
@@ -92,7 +96,7 @@ func printMatch(match Match, lastMatch Match, target string, lastPrintedLine *in
 			}
 
 			var res []byte
-			for _, re := range global.matchRegexes {
+			for _, re := range s.matchRegexes {
 				submatchIndexes := re.FindAllStringSubmatchIndex(matchTest, -1)
 				if len(submatchIndexes) > 0 {
 					for _, subIndex := range submatchIndexes {
@@ -127,8 +131,8 @@ func printMatch(match Match, lastMatch Match, target string, lastPrintedLine *in
 				start := match.start - match.lineStart
 				end := match.end - match.lineStart
 				if int(end) <= len(matchOutput) {
-					matchOutput = matchOutput[0:end] + global.termHighlightReset + matchOutput[end:]
-					matchOutput = matchOutput[0:start] + global.termHighlightMatch + matchOutput[start:]
+					matchOutput = matchOutput[0:end] + s.termHighlightReset + matchOutput[end:]
+					matchOutput = matchOutput[0:start] + s.termHighlightMatch + matchOutput[start:]
 				}
 			}
 		}
@@ -148,9 +152,9 @@ func printMatch(match Match, lastMatch Match, target string, lastPrintedLine *in
 			}
 			// line is not part of the current match
 			if lineno < match.lineno {
-				printFilename(target, "-")
-				printLineno(lineno, "-")
-				writeOutput("%s\n", line)
+				s.printFilename(target, "-")
+				s.printLineno(lineno, "-")
+				s.writeOutput("%s\n", line)
 				*lastPrintedLine = lineno
 			} else {
 				contextBlockIncomplete = true
@@ -160,7 +164,7 @@ func printMatch(match Match, lastMatch Match, target string, lastPrintedLine *in
 	if (lastMatch.contextAfter != nil || match.contextBefore != nil) && !contextBlockIncomplete {
 		if match.lineno-int64(options.ContextBefore) > *lastPrintedLine+1 {
 			// at least one line between the contextAfter of the previous match and the contextBefore of the current match
-			fmt.Fprintln(global.outputFile, "--")
+			fmt.Fprintln(s.outputFile, "--")
 		}
 	}
 
@@ -170,9 +174,9 @@ func printMatch(match Match, lastMatch Match, target string, lastPrintedLine *in
 		for index, line := range contextLines {
 			lineno := match.lineno - int64(len(contextLines)) + int64(index)
 			if lineno > *lastPrintedLine {
-				printFilename(target, "-")
-				printLineno(lineno, "-")
-				writeOutput("%s\n", line)
+				s.printFilename(target, "-")
+				s.printLineno(lineno, "-")
+				s.writeOutput("%s\n", line)
 				*lastPrintedLine = lineno
 			}
 		}
@@ -188,64 +192,65 @@ func printMatch(match Match, lastMatch Match, target string, lastPrintedLine *in
 			lastLineOffset := int64(len(lastLine)) - (match.lineEnd - match.end)
 
 			// first line of multiline match with partial highlighting
-			printFilename(target, options.FieldSeparator)
-			printLineno(match.lineno, options.FieldSeparator)
-			printColumnNo(&match)
-			printByteOffset(&match)
-			writeOutput("%s%s%s%s\n", firstLine[0:firstLineOffset], global.termHighlightMatch,
-				firstLine[firstLineOffset:len(firstLine)], global.termHighlightReset)
+			s.printFilename(target, options.FieldSeparator)
+			s.printLineno(match.lineno, options.FieldSeparator)
+			s.printColumnNo(&match)
+			s.printByteOffset(&match)
+			s.writeOutput("%s%s%s%s\n", firstLine[0:firstLineOffset], s.termHighlightMatch,
+				firstLine[firstLineOffset:], s.termHighlightReset)
 
 			// lines 2 upto n-1 of multiline match with full highlighting
 			for i := 1; i < len(lines)-1; i++ {
 				line := lines[i]
-				printFilename(target, options.FieldSeparator)
-				printLineno(match.lineno+int64(i), options.FieldSeparator)
-				writeOutput("%s%s%s\n", global.termHighlightMatch, line, global.termHighlightReset)
+				s.printFilename(target, options.FieldSeparator)
+				s.printLineno(match.lineno+int64(i), options.FieldSeparator)
+				s.writeOutput("%s%s%s\n", s.termHighlightMatch, line, s.termHighlightReset)
 			}
 
 			// last line of multiline match with partial highlighting
-			printFilename(target, options.FieldSeparator)
-			printLineno(match.lineno+int64(len(lines))-1, options.FieldSeparator)
-			writeOutput("%s%s%s%s%s", global.termHighlightMatch, lastLine[0:lastLineOffset],
-				global.termHighlightReset, lastLine[lastLineOffset:len(lastLine)], options.OutputSeparator)
+			s.printFilename(target, options.FieldSeparator)
+			s.printLineno(match.lineno+int64(len(lines))-1, options.FieldSeparator)
+			s.writeOutput("%s%s%s%s%s", s.termHighlightMatch, lastLine[0:lastLineOffset],
+				s.termHighlightReset, lastLine[lastLineOffset:], options.OutputSeparator)
 			*lastPrintedLine = match.lineno + int64(len(lines)-1)
 		} else {
 			// single line output in multiline mode or replace option used
-			printFilename(target, options.FieldSeparator)
-			printLineno(match.lineno, options.FieldSeparator)
-			printColumnNo(&match)
-			printByteOffset(&match)
-			writeOutput("%s%s", matchOutput, options.OutputSeparator)
+			s.printFilename(target, options.FieldSeparator)
+			s.printLineno(match.lineno, options.FieldSeparator)
+			s.printColumnNo(&match)
+			s.printByteOffset(&match)
+			s.writeOutput("%s%s", matchOutput, options.OutputSeparator)
 			*lastPrintedLine = match.lineno + int64(len(lines)-1)
 		}
 	} else {
 		// single line output
-		printFilename(target, options.FieldSeparator)
-		printLineno(match.lineno, options.FieldSeparator)
-		printColumnNo(&match)
-		printByteOffset(&match)
-		writeOutput("%s%s", matchOutput, options.OutputSeparator)
+		s.printFilename(target, options.FieldSeparator)
+		s.printLineno(match.lineno, options.FieldSeparator)
+		s.printColumnNo(&match)
+		s.printByteOffset(&match)
+		s.writeOutput("%s%s", matchOutput, options.OutputSeparator)
 		*lastPrintedLine = match.lineno
 	}
 }
 
-// printResult prints results using printMatch and handles various output options.
-func printResult(result *Result) {
+// printResult prints results using s.printMatch and handles various output options.
+func (s *Search) printResult(result *Result) {
+	var options = s.options
 	var matchCount int64
 	target := result.target
 	matches := result.matches
 	if options.FilesWithoutMatch {
 		if len(matches) == 0 {
-			writeOutput("%s\n", target)
-			global.totalResultCount++
+			s.writeOutput("%s\n", target)
+			s.totalResultCount++
 		}
 		return
 	}
 	if options.FilesWithMatches && !options.Count {
 		if len(matches) > 0 {
-			writeOutput("%s\n", target)
-			global.totalMatchCount++
-			global.totalResultCount++
+			s.writeOutput("%s\n", target)
+			s.totalMatchCount++
+			s.totalResultCount++
 		}
 		return
 	}
@@ -266,17 +271,17 @@ func printResult(result *Result) {
 		}
 		if options.FilesWithMatches {
 			if matchCount > 0 {
-				writeOutput("%s"+options.FieldSeparator+"%d\n", target, matchCount)
+				s.writeOutput("%s"+options.FieldSeparator+"%d\n", target, matchCount)
 			}
 		} else {
 			if options.ShowFilename == "on" {
-				writeOutput("%s"+options.FieldSeparator, target)
+				s.writeOutput("%s"+options.FieldSeparator, target)
 			}
-			writeOutput("%d\n", matchCount)
+			s.writeOutput("%d\n", matchCount)
 		}
-		global.totalMatchCount += matchCount
+		s.totalMatchCount += matchCount
 		if matchCount > 0 {
-			global.totalResultCount++
+			s.totalResultCount++
 		}
 		return
 	}
@@ -286,12 +291,12 @@ func printResult(result *Result) {
 	}
 
 	// print separator between file results if this is not the first result
-	if global.totalMatchCount > 0 {
+	if s.totalMatchCount > 0 {
 		if options.GroupByFile {
-			fmt.Fprintln(global.outputFile, "")
+			fmt.Fprintln(s.outputFile, "")
 		} else {
 			if options.ContextBefore > 0 || options.ContextAfter > 0 {
-				fmt.Fprintln(global.outputFile, "--")
+				fmt.Fprintln(s.outputFile, "--")
 			}
 		}
 	}
@@ -301,9 +306,9 @@ func printResult(result *Result) {
 		if options.OutputUnixPath {
 			filename = filepath.ToSlash(filename)
 		}
-		writeOutput("Binary file matches: %s\n", filename)
-		global.totalMatchCount++
-		global.totalResultCount++
+		s.writeOutput("Binary file matches: %s\n", filename)
+		s.totalMatchCount++
+		s.totalResultCount++
 		return
 	}
 
@@ -312,7 +317,7 @@ func printResult(result *Result) {
 		if options.OutputUnixPath {
 			filename = filepath.ToSlash(filename)
 		}
-		writeOutput(global.termHighlightFilename+"%s\n"+global.termHighlightReset, filename)
+		s.writeOutput(s.termHighlightFilename+"%s\n"+s.termHighlightReset, filename)
 	}
 
 	var lastPrintedLine int64 = -1
@@ -323,9 +328,9 @@ func printResult(result *Result) {
 		contextLines := strings.Split(*m.contextBefore, "\n")
 		for index, line := range contextLines {
 			lineno := m.lineno - int64(len(contextLines)) + int64(index)
-			printFilename(result.target, "-")
-			printLineno(lineno, "-")
-			writeOutput("%s\n", line)
+			s.printFilename(result.target, "-")
+			s.printLineno(lineno, "-")
+			s.writeOutput("%s\n", line)
 			lastPrintedLine = lineno
 		}
 	}
@@ -333,7 +338,7 @@ func printResult(result *Result) {
 	// print matches with their context
 	lastMatch = matches[0]
 	for _, match := range matches {
-		printMatch(match, lastMatch, result.target, &lastPrintedLine)
+		s.printMatch(match, lastMatch, result.target, &lastPrintedLine)
 		lastMatch = match
 		matchCount++
 		if options.Limit != 0 && matchCount >= options.Limit {
@@ -344,7 +349,7 @@ func printResult(result *Result) {
 	matchStreamLoop:
 		for matches := range result.matchChan {
 			for _, match := range matches {
-				printMatch(match, lastMatch, result.target, &lastPrintedLine)
+				s.printMatch(match, lastMatch, result.target, &lastPrintedLine)
 				lastMatch = match
 				matchCount++
 				if options.Limit != 0 && matchCount >= options.Limit {
@@ -365,13 +370,13 @@ func printResult(result *Result) {
 			} else {
 				lineno = lastMatch.lineno + int64(index) + 1
 			}
-			printFilename(result.target, "-")
-			printLineno(lineno, "-")
-			writeOutput("%s\n", line)
+			s.printFilename(result.target, "-")
+			s.printLineno(lineno, "-")
+			s.writeOutput("%s\n", line)
 			lastPrintedLine = lineno
 		}
 	}
 
-	global.totalMatchCount += matchCount
-	global.totalResultCount++
+	s.totalMatchCount += matchCount
+	s.totalResultCount++
 }

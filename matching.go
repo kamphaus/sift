@@ -25,7 +25,7 @@ import (
 )
 
 // processReader is the main routine working on an io.Reader
-func processReader(reader io.Reader, matchRegexes []*regexp.Regexp, data []byte, testBuffer []byte, target string) error {
+func (s *Search) processReader(reader io.Reader, matchRegexes []*regexp.Regexp, data []byte, testBuffer []byte, target string) error {
 	var (
 		bufferOffset             int
 		err                      error
@@ -53,7 +53,7 @@ func processReader(reader io.Reader, matchRegexes []*regexp.Regexp, data []byte,
 		var length int
 		lastConditionMatch := len(conditionMatches) - 1
 
-		if options.Multiline {
+		if s.options.Multiline {
 			if lastRoundMultilineWindow {
 				// if the last input block was greater than the sliding window size, that last part has to be processed again
 				copy(data[bufferOffset:bufferOffset+InputMultilineWindow], data[lastInputBlockSize-InputMultilineWindow:lastInputBlockSize])
@@ -100,14 +100,14 @@ func processReader(reader io.Reader, matchRegexes []*regexp.Regexp, data []byte,
 
 		// check if file is binary (0x00 found in first 256 bytes)
 		if offset == 0 {
-			s := 256
-			if length < s {
-				s = length
+			m := 256
+			if length < m {
+				m = length
 			}
-			for i := 0; i < s; i++ {
+			for i := 0; i < m; i++ {
 				if data[i] == 0 {
 					resultIsBinary = true
-					if options.BinarySkip {
+					if s.options.BinarySkip {
 						return nil
 					}
 					break
@@ -131,7 +131,7 @@ func processReader(reader io.Reader, matchRegexes []*regexp.Regexp, data []byte,
 				validMatchRange = validMatchRange - lastSeekAmount
 				bufferOffset = 0
 			} else {
-				if lastInputBlockSize == InputBlockSize {
+				if lastInputBlockSize == s.inputBlockSize {
 					return errLineTooLong
 				}
 				bufferOffset = validMatchRange
@@ -140,7 +140,7 @@ func processReader(reader io.Reader, matchRegexes []*regexp.Regexp, data []byte,
 		}
 
 		var testDataPtr []byte
-		if options.IgnoreCase {
+		if s.options.IgnoreCase {
 			bytesToLower(data, testBuffer, length)
 			testDataPtr = testBuffer[0:length]
 		} else {
@@ -149,7 +149,7 @@ func processReader(reader io.Reader, matchRegexes []*regexp.Regexp, data []byte,
 
 		var newMatches Matches
 		for _, re := range matchRegexes {
-			tmpMatches := getMatches(re, data, testDataPtr, offset, length, validMatchRange, 0, target)
+			tmpMatches := s.getMatches(re, data, testDataPtr, offset, length, validMatchRange, 0, target)
 			if len(tmpMatches) > 0 {
 				newMatches = append(newMatches, tmpMatches...)
 			}
@@ -166,8 +166,8 @@ func processReader(reader io.Reader, matchRegexes []*regexp.Regexp, data []byte,
 					validMatch = true
 				} else {
 					m := newMatches[i]
-					if (!options.Multiline && m.lineEnd > prevMatch.lineEnd) ||
-						(options.Multiline && m.start >= prevMatch.end) {
+					if (!s.options.Multiline && m.lineEnd > prevMatch.lineEnd) ||
+						(s.options.Multiline && m.start >= prevMatch.end) {
 						validMatch = true
 					}
 				}
@@ -181,8 +181,8 @@ func processReader(reader io.Reader, matchRegexes []*regexp.Regexp, data []byte,
 			}
 		}
 
-		for conditionID, condition := range global.conditions {
-			tmpMatches := getMatches(condition.regex, data, testDataPtr, offset, length, validMatchRange, conditionID, target)
+		for conditionID, condition := range s.conditions {
+			tmpMatches := s.getMatches(condition.regex, data, testDataPtr, offset, length, validMatchRange, conditionID, target)
 			if len(tmpMatches) > 0 {
 				conditionMatches = append(conditionMatches, tmpMatches...)
 			}
@@ -191,14 +191,14 @@ func processReader(reader io.Reader, matchRegexes []*regexp.Regexp, data []byte,
 			sort.Sort(Matches(conditionMatches))
 		}
 
-		if options.ShowLineNumbers || options.ContextBefore > 0 || options.ContextAfter > 0 || len(global.conditions) > 0 {
+		if s.options.ShowLineNumbers || s.options.ContextBefore > 0 || s.options.ContextAfter > 0 || len(s.conditions) > 0 {
 			linecount = countLines(data, lastConditionMatch, newMatches, conditionMatches, offset, validMatchRange, linecount)
 		}
 
 		if len(newMatches) > 0 {
 			// if a list option is used exit here if possible
-			if (options.FilesWithMatches || options.FilesWithoutMatch) && !options.Count && len(global.conditions) == 0 {
-				global.resultsChan <- &Result{target: target, matches: []Match{Match{}}}
+			if (s.options.FilesWithMatches || s.options.FilesWithoutMatch) && !s.options.Count && len(s.conditions) == 0 {
+				s.resultsChan <- &Result{target: target, matches: []Match{{}}}
 				return nil
 			}
 
@@ -207,10 +207,10 @@ func processReader(reader io.Reader, matchRegexes []*regexp.Regexp, data []byte,
 				matchChan <- newMatches
 			} else {
 				matches = append(matches, newMatches...)
-				if len(matches) > global.streamingThreshold && global.streamingAllowed {
+				if len(matches) > s.streamingThreshold && s.streamingAllowed {
 					resultStreaming = true
 					matchChan = make(chan Matches, 16)
-					global.resultsChan <- &Result{target: target, matches: matches, streaming: true, matchChan: matchChan, isBinary: resultIsBinary}
+					s.resultsChan <- &Result{target: target, matches: matches, streaming: true, matchChan: matchChan, isBinary: resultIsBinary}
 					defer func() {
 						close(matchChan)
 					}()
@@ -218,7 +218,7 @@ func processReader(reader io.Reader, matchRegexes []*regexp.Regexp, data []byte,
 			}
 
 			matchCount += int64(len(newMatches))
-			if options.Limit != 0 && matchCount >= options.Limit {
+			if s.options.Limit != 0 && matchCount >= s.options.Limit {
 				break
 			}
 		}
@@ -233,7 +233,7 @@ func processReader(reader io.Reader, matchRegexes []*regexp.Regexp, data []byte,
 	}
 
 	if !resultStreaming {
-		global.resultsChan <- &Result{target: target, matches: matches, conditionMatches: conditionMatches, streaming: false, isBinary: resultIsBinary}
+		s.resultsChan <- &Result{target: target, matches: matches, conditionMatches: conditionMatches, streaming: false, isBinary: resultIsBinary}
 	}
 	return nil
 }
@@ -244,7 +244,7 @@ func processReader(reader io.Reader, matchRegexes []*regexp.Regexp, data []byte,
 // testBuffer contains the data to test the regex against (potentially modified, e.g. to support the ignore case option).
 // length contains the length of the provided data.
 // matches are only valid if they start within the validMatchRange.
-func getMatches(regex *regexp.Regexp, data []byte, testBuffer []byte, offset int64, length int, validMatchRange int, conditionID int, target string) Matches {
+func (s *Search) getMatches(regex *regexp.Regexp, data []byte, testBuffer []byte, offset int64, length int, validMatchRange int, conditionID int, target string) Matches {
 	var matches Matches
 	if allIndex := regex.FindAllIndex(testBuffer, -1); allIndex != nil {
 		// for _, index := range allindex {
@@ -254,7 +254,7 @@ func getMatches(regex *regexp.Regexp, data []byte, testBuffer []byte, offset int
 			end := index[1]
 			// \s always matches newline, leading to incorrect matches in non-multiline mode
 			// analyze match and reject false matches
-			if !options.Multiline {
+			if !s.options.Multiline {
 				// remove newlines at the beginning of the match
 				for ; start < length && end > start && data[start] == 0x0a; start++ {
 				}
@@ -301,7 +301,7 @@ func getMatches(regex *regexp.Regexp, data []byte, testBuffer []byte, offset int
 
 			lineStart := start
 			lineEnd := end
-			if options.Multiline && start >= validMatchRange {
+			if s.options.Multiline && start >= validMatchRange {
 				continue
 			}
 			for lineStart > 0 && data[lineStart-1] != 0x0a {
@@ -314,7 +314,7 @@ func getMatches(regex *regexp.Regexp, data []byte, testBuffer []byte, offset int
 			var contextBefore *string
 			var contextAfter *string
 
-			if options.ContextBefore > 0 {
+			if s.options.ContextBefore > 0 {
 				var contextBeforeStart int
 				if lineStart > 0 {
 					contextBeforeStart = lineStart - 1
@@ -322,28 +322,28 @@ func getMatches(regex *regexp.Regexp, data []byte, testBuffer []byte, offset int
 					for contextBeforeStart > 0 {
 						if data[contextBeforeStart-1] == 0x0a {
 							precedingLinesFound++
-							if precedingLinesFound == options.ContextBefore {
+							if precedingLinesFound == s.options.ContextBefore {
 								break
 							}
 						}
 						contextBeforeStart--
 					}
-					if precedingLinesFound < options.ContextBefore && contextBeforeStart == 0 && offset > 0 {
-						contextBefore = getBeforeContextFromFile(target, offset, start)
+					if precedingLinesFound < s.options.ContextBefore && contextBeforeStart == 0 && offset > 0 {
+						contextBefore = s.getBeforeContextFromFile(target, offset, start)
 					} else {
 						tmp := string(data[contextBeforeStart : lineStart-1])
 						contextBefore = &tmp
 					}
 				} else {
 					if offset > 0 {
-						contextBefore = getBeforeContextFromFile(target, offset, start)
+						contextBefore = s.getBeforeContextFromFile(target, offset, start)
 					} else {
 						contextBefore = nil
 					}
 				}
 			}
 
-			if options.ContextAfter > 0 {
+			if s.options.ContextAfter > 0 {
 				var contextAfterEnd int
 				if lineEnd < length-1 {
 					contextAfterEnd = lineEnd
@@ -351,21 +351,21 @@ func getMatches(regex *regexp.Regexp, data []byte, testBuffer []byte, offset int
 					for contextAfterEnd < length-1 {
 						if data[contextAfterEnd+1] == 0x0a {
 							followingLinesFound++
-							if followingLinesFound == options.ContextAfter {
+							if followingLinesFound == s.options.ContextAfter {
 								contextAfterEnd++
 								break
 							}
 						}
 						contextAfterEnd++
 					}
-					if followingLinesFound < options.ContextAfter && contextAfterEnd == length-1 {
-						contextAfter = getAfterContextFromFile(target, offset, end)
+					if followingLinesFound < s.options.ContextAfter && contextAfterEnd == length-1 {
+						contextAfter = s.getAfterContextFromFile(target, offset, end)
 					} else {
 						tmp := string(data[lineEnd+1 : contextAfterEnd])
 						contextAfter = &tmp
 					}
 				} else {
-					contextAfter = getAfterContextFromFile(target, offset, end)
+					contextAfter = s.getAfterContextFromFile(target, offset, end)
 				}
 			}
 
@@ -424,34 +424,34 @@ func countLines(data []byte, lastConditionMatch int, matches Matches, conditionM
 }
 
 // applyConditions removes matches from a result that do not fulfill all conditions
-func (result *Result) applyConditions() {
-	if len(result.matches) == 0 || len(global.conditions) == 0 {
+func (s *Search) applyConditions(result *Result) {
+	if len(result.matches) == 0 || len(s.conditions) == 0 {
 		return
 	}
 
 	// check conditions that are independent of found matches
-	conditionStatus := make([]bool, len(global.conditions))
+	conditionStatus := make([]bool, len(s.conditions))
 	var conditionFulfilled bool
 	for _, conditionMatch := range result.conditionMatches {
 		conditionFulfilled = false
-		switch global.conditions[conditionMatch.conditionID].conditionType {
+		switch s.conditions[conditionMatch.conditionID].conditionType {
 		case ConditionFileMatches:
 			conditionFulfilled = true
 		case ConditionLineMatches:
-			if conditionMatch.lineno == global.conditions[conditionMatch.conditionID].lineRangeStart {
+			if conditionMatch.lineno == s.conditions[conditionMatch.conditionID].lineRangeStart {
 				conditionFulfilled = true
 			}
 		case ConditionRangeMatches:
-			if conditionMatch.lineno >= global.conditions[conditionMatch.conditionID].lineRangeStart &&
-				conditionMatch.lineno <= global.conditions[conditionMatch.conditionID].lineRangeEnd {
+			if conditionMatch.lineno >= s.conditions[conditionMatch.conditionID].lineRangeStart &&
+				conditionMatch.lineno <= s.conditions[conditionMatch.conditionID].lineRangeEnd {
 				conditionFulfilled = true
 			}
 		default:
 			// ingore other condition types
-			conditionFulfilled = !global.conditions[conditionMatch.conditionID].negated
+			conditionFulfilled = !s.conditions[conditionMatch.conditionID].negated
 		}
 		if conditionFulfilled {
-			if global.conditions[conditionMatch.conditionID].negated {
+			if s.conditions[conditionMatch.conditionID].negated {
 				result.matches = Matches{}
 				return
 			}
@@ -459,7 +459,7 @@ func (result *Result) applyConditions() {
 		}
 	}
 	for i := range conditionStatus {
-		if conditionStatus[i] != true && !global.conditions[i].negated {
+		if conditionStatus[i] != true && !s.conditions[i].negated {
 			result.matches = Matches{}
 			return
 		}
@@ -470,12 +470,12 @@ MatchLoop:
 	for matchIndex := 0; matchIndex < len(result.matches); {
 		match := result.matches[matchIndex]
 		lineno := match.lineno
-		conditionStatus := make([]bool, len(global.conditions))
+		conditionStatus := make([]bool, len(s.conditions))
 		for _, conditionMatch := range result.conditionMatches {
 			conditionFulfilled := false
-			maxAllowedDistance := global.conditions[conditionMatch.conditionID].within
+			maxAllowedDistance := s.conditions[conditionMatch.conditionID].within
 			var actualDistance int64 = -1
-			switch global.conditions[conditionMatch.conditionID].conditionType {
+			switch s.conditions[conditionMatch.conditionID].conditionType {
 			case ConditionPreceded:
 				actualDistance = lineno - conditionMatch.lineno
 				if actualDistance == 0 {
@@ -503,10 +503,10 @@ MatchLoop:
 				}
 			default:
 				// ingore other condition types
-				conditionFulfilled = !global.conditions[conditionMatch.conditionID].negated
+				conditionFulfilled = !s.conditions[conditionMatch.conditionID].negated
 			}
 			if conditionFulfilled {
-				if global.conditions[conditionMatch.conditionID].negated {
+				if s.conditions[conditionMatch.conditionID].negated {
 					goto ConditionFailed
 				} else {
 					conditionStatus[conditionMatch.conditionID] = true
@@ -514,7 +514,7 @@ MatchLoop:
 			}
 		}
 		for i := range conditionStatus {
-			if conditionStatus[i] != true && !global.conditions[i].negated {
+			if conditionStatus[i] != true && !s.conditions[i].negated {
 				goto ConditionFailed
 			}
 		}
@@ -529,15 +529,15 @@ MatchLoop:
 
 // getBeforeContextFromFile gets the context lines directly from the file.
 // It is used when the context lines exceed the currently buffered data from the file.
-func getBeforeContextFromFile(target string, offset int64, start int) *string {
+func (s *Search) getBeforeContextFromFile(target string, offset int64, start int) *string {
 	var contextBeforeStart int
 	infile, _ := os.Open(target)
-	seekPosition := offset + int64(start) - int64(InputBlockSize)
+	seekPosition := offset + int64(start) - int64(s.inputBlockSize)
 	if seekPosition < 0 {
 		seekPosition = 0
 	}
-	count := InputBlockSize
-	if offset == 0 && start < InputBlockSize {
+	count := s.inputBlockSize
+	if offset == 0 && start < s.inputBlockSize {
 		count = start
 	}
 	infile.Seek(seekPosition, 0)
@@ -555,7 +555,7 @@ func getBeforeContextFromFile(target string, offset int64, start int) *string {
 		for contextBeforeStart > 0 {
 			if buffer[contextBeforeStart-1] == 0x0a {
 				precedingLinesFound++
-				if precedingLinesFound == options.ContextBefore {
+				if precedingLinesFound == s.options.ContextBefore {
 					break
 				}
 			}
@@ -569,13 +569,13 @@ func getBeforeContextFromFile(target string, offset int64, start int) *string {
 
 // getAfterContextFromFile gets the context lines directly from the file.
 // It is used when the context lines exceed the currently buffered data from the file.
-func getAfterContextFromFile(target string, offset int64, end int) *string {
+func (s *Search) getAfterContextFromFile(target string, offset int64, end int) *string {
 	var contextAfterEnd int
 	infile, _ := os.Open(target)
 	seekPosition := offset + int64(end)
 	infile.Seek(seekPosition, 0)
 	reader := bufio.NewReader(infile)
-	buffer := make([]byte, InputBlockSize)
+	buffer := make([]byte, s.inputBlockSize)
 	length, _ := reader.Read(buffer)
 
 	lineEnd := 0
@@ -588,14 +588,14 @@ func getAfterContextFromFile(target string, offset int64, end int) *string {
 		for contextAfterEnd < length-1 {
 			if buffer[contextAfterEnd+1] == 0x0a {
 				followingLinesFound++
-				if followingLinesFound == options.ContextAfter {
+				if followingLinesFound == s.options.ContextAfter {
 					contextAfterEnd++
 					break
 				}
 			}
 			contextAfterEnd++
 		}
-		if followingLinesFound < options.ContextAfter && contextAfterEnd == length-1 && buffer[length-1] != 0x0a {
+		if followingLinesFound < s.options.ContextAfter && contextAfterEnd == length-1 && buffer[length-1] != 0x0a {
 			contextAfterEnd++
 		}
 		tmp := string(buffer[lineEnd+1 : contextAfterEnd])
@@ -606,7 +606,7 @@ func getAfterContextFromFile(target string, offset int64, end int) *string {
 
 // processInvertMatchesReader is used to handle the '--invert' option.
 // This function works line based and provides very limited support for options.
-func processReaderInvertMatch(reader io.Reader, matchRegexes []*regexp.Regexp, target string) error {
+func (s *Search) processReaderInvertMatch(reader io.Reader, matchRegexes []*regexp.Regexp, target string) error {
 	matches := make([]Match, 0, 16)
 	var linecount int64
 	var matchFound bool
@@ -615,14 +615,14 @@ func processReaderInvertMatch(reader io.Reader, matchRegexes []*regexp.Regexp, t
 		line := scanner.Text()
 		linecount++
 		matchFound = false
-		for _, re := range global.matchRegexes {
+		for _, re := range s.matchRegexes {
 			if re.MatchString(line) {
 				matchFound = true
 			}
 		}
 		if !matchFound {
-			if options.FilesWithMatches || options.FilesWithoutMatch {
-				global.resultsChan <- &Result{matches: []Match{Match{}}, target: target}
+			if s.options.FilesWithMatches || s.options.FilesWithoutMatch {
+				s.resultsChan <- &Result{matches: []Match{{}}, target: target}
 				return nil
 			}
 			m := Match{
@@ -633,6 +633,6 @@ func processReaderInvertMatch(reader io.Reader, matchRegexes []*regexp.Regexp, t
 		}
 	}
 	result := &Result{matches: matches, target: target}
-	global.resultsChan <- result
+	s.resultsChan <- result
 	return nil
 }
