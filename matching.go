@@ -19,6 +19,7 @@ import (
 	"bufio"
 	"bytes"
 	"io"
+	"io/ioutil"
 	"os"
 	"regexp"
 	"sort"
@@ -46,8 +47,46 @@ func (s *Search) processReader(reader io.Reader, matchRegexes []*regexp.Regexp, 
 	matches := make([]Match, 0, 16)
 	conditionMatches := make([]Match, 0, 16)
 
+	if s.skipBytes > 0 {
+		var skippedBytes int64
+		if s.options.ShowLineNumbers {
+			var length int
+			for s.skipBytes > 0 {
+				if s.skipBytes < int64(len(data)) {
+					length, err = reader.Read(data[:s.skipBytes])
+				} else {
+					length, err = reader.Read(data[:])
+				}
+				s.skipBytes -= int64(length)
+				offset += int64(length)
+				linecount += int64(countNewlines(data, length))
+				if err != nil {
+					if err == io.EOF || err == io.ErrClosedPipe {
+						isEOF = true
+					} else {
+						return err
+					}
+				}
+			}
+		} else {
+			if seeker, ok := reader.(io.ReadSeeker); ok {
+				skippedBytes, err = seeker.Seek(s.skipBytes, io.SeekStart)
+			} else {
+				skippedBytes, err = io.CopyN(ioutil.Discard, reader, s.skipBytes)
+			}
+			s.skipBytes -= skippedBytes
+			offset += skippedBytes
+			if err != nil {
+				if !(err == io.EOF || err == io.ErrClosedPipe) {
+					s.errorLogger.Printf("could not skip '%s' bytes: %s\n", s.options.SkipBytes, err)
+				}
+				return nil
+			}
+		}
+	}
+
 	for {
-		if isEOF {
+		if isEOF || s.pipeAbort.IsSet() {
 			break
 		}
 		var length int
@@ -65,7 +104,7 @@ func (s *Search) processReader(reader io.Reader, matchRegexes []*regexp.Regexp, 
 				length += bufferOffset
 			}
 			if err != nil {
-				if err == io.EOF {
+				if err == io.EOF || err == io.ErrClosedPipe {
 					isEOF = true
 				} else {
 					return err
@@ -85,7 +124,7 @@ func (s *Search) processReader(reader io.Reader, matchRegexes []*regexp.Regexp, 
 			// single line mode
 			length, err = reader.Read(data[bufferOffset:])
 			if err != nil {
-				if err == io.EOF {
+				if err == io.EOF || err == io.ErrClosedPipe {
 					isEOF = true
 				} else {
 					return err
@@ -612,6 +651,9 @@ func (s *Search) processReaderInvertMatch(reader io.Reader, matchRegexes []*rege
 	var matchFound bool
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
+		if s.pipeAbort.IsSet() {
+			return nil
+		}
 		line := scanner.Text()
 		linecount++
 		matchFound = false

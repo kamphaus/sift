@@ -17,6 +17,7 @@ package sift
 
 import (
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 )
@@ -38,7 +39,11 @@ func (s *Search) writeOutput(format string, a ...interface{}) {
 	output := fmt.Sprintf(format, a...)
 	_, err := s.outputFile.Write([]byte(output))
 	if err != nil {
-		s.errorLogger.Fatalln("cannot write to output file:", err)
+		if err != io.ErrClosedPipe {
+			s.errorLogger.Fatalln("cannot write to output file:", err)
+		} else {
+			s.pipeAbort.Set()
+		}
 	}
 }
 

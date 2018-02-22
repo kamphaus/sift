@@ -111,6 +111,7 @@ type Options struct {
 	Zip                 bool   `short:"z" long:"zip" description:"search content of compressed .gz files (default: off)"`
 	NoZip               func() `short:"Z" long:"no-zip" description:"do not search content of compressed .gz files" json:"-"`
 	WriteConfigAsJSON   bool   `long:"write-json" description:"serializes & prints the effective configuration as JSON" json:"-"`
+	SkipBytes           int64  `long:"skip-bytes" description:"skip this many bytes before starting to look for matches"`
 
 	FileConditions struct {
 		FileMatches     []string `long:"file-matches" description:"only show matches if file also matches PATTERN" value-name:"PATTERN"`

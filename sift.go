@@ -30,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kamphaus/sift/abool"
 	"github.com/svent/go-nbreader"
 	"github.com/svent/sift/gitignore"
 )
@@ -149,6 +150,8 @@ type Search struct {
 	totalMatchCount       int64
 	totalResultCount      int64
 	totalTargetCount      int64
+	skipBytes             int64
+	pipeAbort             *abool.AtomicBool
 }
 
 func (s *Search) GetOptions() *Options {
@@ -183,6 +186,8 @@ func NewSearch(options *Options, inputFile io.ReadCloser, outputFile io.Writer, 
 		streamingThreshold: 1 << 16,
 		fileTypesMap:       getFileTypes(),
 		inputBlockSize:     256 * 1024,
+		pipeAbort:          abool.New(),
+		skipBytes:          options.SkipBytes,
 	}
 }
 
@@ -604,7 +609,7 @@ func (s *Search) ExecuteSearch(targets []string) (ret int, err error) {
 		fmt.Fprintf(os.Stderr, "in %v\n", tend.Sub(tstart))
 	}
 
-	//s.inputFile.Close()
+	s.inputFile.Close()
 
 	return retVal, nil
 }
