@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-package main
+package sift
 
 import (
 	"bufio"
@@ -26,12 +26,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/svent/go-flags"
 	"github.com/svent/go-nbreader"
 	"github.com/svent/sift/gitignore"
 )
@@ -118,7 +116,6 @@ type Result struct {
 }
 
 var (
-	errorLogger    = log.New(os.Stderr, "Error: ", 0)
 	errLineTooLong = errors.New("line too long")
 )
 
@@ -133,7 +130,7 @@ type Search struct {
 	includeFilepathRegex  *regexp.Regexp
 	excludeFilepathRegex  *regexp.Regexp
 	netTcpRegex           *regexp.Regexp
-	inputFile             io.Reader
+	inputFile             io.ReadCloser
 	outputFile            io.Writer
 	matchPatterns         []string
 	matchRegexes          []*regexp.Regexp
@@ -154,12 +151,20 @@ type Search struct {
 	totalTargetCount      int64
 }
 
-func NewSearch(options *Options, inputFile io.Reader, outputFile io.Writer, errorLogger *log.Logger) *Search {
+func (s *Search) GetOptions() *Options {
+	return s.options
+}
+
+func (s *Search) GetMatchPatterns() []string {
+	return s.matchPatterns
+}
+
+func NewSearch(options *Options, inputFile io.ReadCloser, outputFile io.Writer, errorLogger *log.Logger) *Search {
 	var stdOut io.Writer = os.Stdout
 	if outputFile != nil {
 		stdOut = outputFile
 	}
-	var stdIn io.Reader = os.Stdin
+	var stdIn io.ReadCloser = os.Stdin
 	if inputFile != nil {
 		stdIn = inputFile
 	}
@@ -599,60 +604,7 @@ func (s *Search) ExecuteSearch(targets []string) (ret int, err error) {
 		fmt.Fprintf(os.Stderr, "in %v\n", tend.Sub(tstart))
 	}
 
+	//s.inputFile.Close()
+
 	return retVal, nil
-}
-
-func main() {
-	var targets []string
-	var args []string
-	var err error
-	var options = Options{}
-
-	parser := flags.NewNamedParser("sift", flags.HelpFlag|flags.PassDoubleDash)
-	parser.AddGroup("Options", "Options", &options)
-	parser.Name = "sift"
-	parser.Usage = "[OPTIONS] PATTERN [FILE|PATH|tcp://HOST:PORT]...\n" +
-		"  sift [OPTIONS] [-e PATTERN | -f FILE] [FILE|PATH|tcp://HOST:PORT]...\n" +
-		"  sift [OPTIONS] --targets [FILE|PATH]..."
-
-	// temporarily parse options to see if the --no-conf/--conf options were used and
-	// then discard the result
-	options.LoadDefaults()
-	args, err = parser.Parse()
-	if err != nil {
-		if e, ok := err.(*flags.Error); ok && e.Type == flags.ErrHelp {
-			fmt.Println(e.Error())
-			os.Exit(0)
-		} else {
-			errorLogger.Println(err)
-			os.Exit(2)
-		}
-	}
-	noConf := options.NoConfig
-	configFile := options.ConfigFile
-	options = Options{}
-
-	s := NewSearch(&options, nil, os.Stdout, errorLogger)
-
-	// perform full option parsing respecting the --no-conf/--conf options
-	s.options.LoadDefaults()
-	s.LoadConfigs(noConf, configFile)
-	args, err = parser.Parse()
-	if err != nil {
-		s.errorLogger.Println(err)
-		os.Exit(2)
-	}
-
-	targets = s.ProcessArgs(args)
-
-	if err := s.Apply(s.matchPatterns, targets); err != nil {
-		s.errorLogger.Fatalf("cannot process options: %s\n", err)
-	}
-	runtime.GOMAXPROCS(s.options.Cores)
-
-	retVal, err := s.ExecuteSearch(targets)
-	if err != nil {
-		s.errorLogger.Println(err)
-	}
-	os.Exit(retVal)
 }
