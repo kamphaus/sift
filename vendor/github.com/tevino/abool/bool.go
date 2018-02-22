@@ -20,6 +20,8 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+// Package abool provides atomic Boolean type for cleaner code and
+// better performance.
 package abool
 
 import "sync/atomic"

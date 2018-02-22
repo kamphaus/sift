@@ -30,9 +30,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kamphaus/sift/abool"
 	"github.com/svent/go-nbreader"
 	"github.com/svent/sift/gitignore"
+	"github.com/tevino/abool"
 )
 
 const (
