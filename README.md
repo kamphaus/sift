@@ -14,6 +14,7 @@ sift has a slightly different focus than most other grep alternatives. Code sear
 * Support for adding custom file types to narrow down searches
 * Multiline support
 * Support for big files: >50GB, >5,000,000,000 lines and >5,000,000,000 matches successfully tested
+* Allow skipping a given amount of bytes before testing for matches
 
 Sift allows easy customization.
 Example: Configure sift to
