@@ -16,6 +16,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -109,6 +110,7 @@ type Options struct {
 	WriteConfig         bool   `long:"write-config" description:"save config for loaded configs + given command line arguments" json:"-"`
 	Zip                 bool   `short:"z" long:"zip" description:"search content of compressed .gz files (default: off)"`
 	NoZip               func() `short:"Z" long:"no-zip" description:"do not search content of compressed .gz files" json:"-"`
+	WriteConfigAsJSON   bool   `long:"write-json" description:"serializes & prints the effective configuration as JSON" json:"-"`
 
 	FileConditions struct {
 		FileMatches     []string `long:"file-matches" description:"only show matches if file also matches PATTERN" value-name:"PATTERN"`
@@ -311,6 +313,69 @@ func (s *Search) LoadConfigs(noConf bool, configFileArg string) {
 	}
 }
 
+// ProcessArgs takes the remaining arguments and processes them into matchPatterns and targets
+func (s *Search) ProcessArgs(args []string) (targets []string) {
+	for _, pattern := range s.options.Patterns {
+		s.matchPatterns = append(s.matchPatterns, pattern)
+	}
+
+	if s.options.PatternFile != "" {
+		f, err := os.Open(s.options.PatternFile)
+		if err != nil {
+			s.errorLogger.Fatalln("Cannot open pattern file:\n", err)
+		}
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			pattern := scanner.Text()
+			s.matchPatterns = append(s.matchPatterns, pattern)
+
+		}
+	}
+	if len(s.matchPatterns) == 0 {
+		if len(args) == 0 && !(s.options.PrintConfig || s.options.WriteConfig ||
+			s.options.TargetsOnly || s.options.ListTypes) {
+			s.errorLogger.Fatalln("No pattern given. Try 'sift --help' for more information.")
+		}
+		if len(args) > 0 && !s.options.TargetsOnly {
+			s.matchPatterns = append(s.matchPatterns, args[0])
+			args = args[1:]
+		}
+	}
+
+	if len(args) == 0 {
+		// check whether there is input on STDIN
+		if !terminal.IsTerminal(int(os.Stdin.Fd())) {
+			targets = []string{"-"}
+		} else {
+			targets = []string{"."}
+		}
+	} else {
+		targets = args[0:]
+	}
+
+	// expand arguments containing patterns on Windows
+	if runtime.GOOS == "windows" {
+		targetsExpanded := []string{}
+		for _, t := range targets {
+			if t == "-" {
+				targetsExpanded = append(targetsExpanded, t)
+				continue
+			}
+			expanded, err := filepath.Glob(t)
+			if err == filepath.ErrBadPattern {
+				s.errorLogger.Fatalf("cannot parse argument '%s': %s\n", t, err)
+			}
+			if expanded != nil {
+				for _, e := range expanded {
+					targetsExpanded = append(targetsExpanded, e)
+				}
+			}
+		}
+		targets = targetsExpanded
+	}
+	return
+}
+
 // Apply processes user provided options
 func (s *Search) Apply(patterns []string, targets []string) error {
 	var o = s.options
@@ -350,7 +415,17 @@ func (s *Search) Apply(patterns []string, targets []string) error {
 		patterns[i] = o.preparePattern(patterns[i])
 	}
 
-	runtime.GOMAXPROCS(o.Cores)
+	s.printConfig()
+
+	s.matchRegexes = make([]*regexp.Regexp, len(s.matchPatterns))
+	var err error
+	for i := range s.matchPatterns {
+		s.matchRegexes[i], err = regexp.Compile(s.matchPatterns[i])
+		if err != nil {
+			s.errorLogger.Fatalf("cannot parse pattern: %s\n", err)
+		}
+	}
+
 	return nil
 }
 
@@ -844,5 +919,18 @@ func (s *Search) performAutoDetections(patterns []string, targets []string) {
 		s.termHighlightLineno = ""
 		s.termHighlightMatch = ""
 		s.termHighlightReset = ""
+	}
+}
+
+// printConfig outputs the used configuration as JSON
+func (s *Search) printConfig() {
+	if !s.options.WriteConfigAsJSON {
+		return
+	}
+	js, err := json.Marshal(s.options)
+	if err != nil {
+		s.errorLogger.Fatalf("Could not print effective configuration: %v", err)
+	} else {
+		fmt.Println("Effective configuration: " + string(js))
 	}
 }

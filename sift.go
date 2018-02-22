@@ -34,7 +34,6 @@ import (
 	"github.com/svent/go-flags"
 	"github.com/svent/go-nbreader"
 	"github.com/svent/sift/gitignore"
-	"golang.org/x/crypto/ssh/terminal"
 )
 
 const (
@@ -134,6 +133,7 @@ type Search struct {
 	includeFilepathRegex  *regexp.Regexp
 	excludeFilepathRegex  *regexp.Regexp
 	netTcpRegex           *regexp.Regexp
+	inputFile             io.Reader
 	outputFile            io.Writer
 	matchPatterns         []string
 	matchRegexes          []*regexp.Regexp
@@ -154,10 +154,14 @@ type Search struct {
 	totalTargetCount      int64
 }
 
-func NewSearch(options *Options, outputFile io.Writer, errorLogger *log.Logger) *Search {
+func NewSearch(options *Options, inputFile io.Reader, outputFile io.Writer, errorLogger *log.Logger) *Search {
 	var stdOut io.Writer = os.Stdout
 	if outputFile != nil {
 		stdOut = outputFile
+	}
+	var stdIn io.Reader = os.Stdin
+	if inputFile != nil {
+		stdIn = inputFile
 	}
 	var errOut *log.Logger
 	if errorLogger != nil {
@@ -167,6 +171,7 @@ func NewSearch(options *Options, outputFile io.Writer, errorLogger *log.Logger) 
 	}
 	return &Search{
 		options:            options,
+		inputFile:          stdIn,
 		outputFile:         stdOut,
 		errorLogger:        errOut,
 		netTcpRegex:        regexp.MustCompile(`^(tcp[46]?)://(.*:\d+)$`),
@@ -427,7 +432,11 @@ func (s *Search) processFileTargets() {
 		}
 
 		if filepath == "-" {
-			infile = os.Stdin
+			if stdIn, ok := s.inputFile.(*os.File); ok {
+				infile = stdIn
+			} else {
+				reader = s.inputFile
+			}
 		} else {
 			infile, err = os.Open(filepath)
 			if err != nil {
@@ -447,7 +456,7 @@ func (s *Search) processFileTargets() {
 		} else if infile == os.Stdin && s.options.Multiline {
 			reader = nbreader.NewNBReader(infile, s.inputBlockSize,
 				nbreader.ChunkTimeout(MultilinePipeChunkTimeout), nbreader.Timeout(MultilinePipeTimeout))
-		} else {
+		} else if infile != nil {
 			reader = infile
 		}
 
@@ -510,7 +519,7 @@ func (s *Search) processNetworkTarget(target string) {
 	}
 }
 
-func (s *Search) executeSearch(targets []string) (ret int, err error) {
+func (s *Search) ExecuteSearch(targets []string) (ret int, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			ret = 2
@@ -597,10 +606,10 @@ func main() {
 	var targets []string
 	var args []string
 	var err error
-	var options = &Options{}
+	var options = Options{}
 
 	parser := flags.NewNamedParser("sift", flags.HelpFlag|flags.PassDoubleDash)
-	parser.AddGroup("Options", "Options", options)
+	parser.AddGroup("Options", "Options", &options)
 	parser.Name = "sift"
 	parser.Usage = "[OPTIONS] PATTERN [FILE|PATH|tcp://HOST:PORT]...\n" +
 		"  sift [OPTIONS] [-e PATTERN | -f FILE] [FILE|PATH|tcp://HOST:PORT]...\n" +
@@ -621,9 +630,9 @@ func main() {
 	}
 	noConf := options.NoConfig
 	configFile := options.ConfigFile
-	options = &Options{}
+	options = Options{}
 
-	s := NewSearch(options, os.Stdout, errorLogger)
+	s := NewSearch(&options, nil, os.Stdout, errorLogger)
 
 	// perform full option parsing respecting the --no-conf/--conf options
 	s.options.LoadDefaults()
@@ -634,78 +643,14 @@ func main() {
 		os.Exit(2)
 	}
 
-	for _, pattern := range s.options.Patterns {
-		s.matchPatterns = append(s.matchPatterns, pattern)
-	}
-
-	if s.options.PatternFile != "" {
-		f, err := os.Open(s.options.PatternFile)
-		if err != nil {
-			s.errorLogger.Fatalln("Cannot open pattern file:\n", err)
-		}
-		scanner := bufio.NewScanner(f)
-		for scanner.Scan() {
-			pattern := scanner.Text()
-			s.matchPatterns = append(s.matchPatterns, pattern)
-
-		}
-	}
-	if len(s.matchPatterns) == 0 {
-		if len(args) == 0 && !(s.options.PrintConfig || s.options.WriteConfig ||
-			s.options.TargetsOnly || s.options.ListTypes) {
-			s.errorLogger.Fatalln("No pattern given. Try 'sift --help' for more information.")
-		}
-		if len(args) > 0 && !s.options.TargetsOnly {
-			s.matchPatterns = append(s.matchPatterns, args[0])
-			args = args[1:]
-		}
-	}
-
-	if len(args) == 0 {
-		// check whether there is input on STDIN
-		if !terminal.IsTerminal(int(os.Stdin.Fd())) {
-			targets = []string{"-"}
-		} else {
-			targets = []string{"."}
-		}
-	} else {
-		targets = args[0:]
-	}
-
-	// expand arguments containing patterns on Windows
-	if runtime.GOOS == "windows" {
-		targetsExpanded := []string{}
-		for _, t := range targets {
-			if t == "-" {
-				targetsExpanded = append(targetsExpanded, t)
-				continue
-			}
-			expanded, err := filepath.Glob(t)
-			if err == filepath.ErrBadPattern {
-				s.errorLogger.Fatalf("cannot parse argument '%s': %s\n", t, err)
-			}
-			if expanded != nil {
-				for _, e := range expanded {
-					targetsExpanded = append(targetsExpanded, e)
-				}
-			}
-		}
-		targets = targetsExpanded
-	}
+	targets = s.ProcessArgs(args)
 
 	if err := s.Apply(s.matchPatterns, targets); err != nil {
 		s.errorLogger.Fatalf("cannot process options: %s\n", err)
 	}
+	runtime.GOMAXPROCS(s.options.Cores)
 
-	s.matchRegexes = make([]*regexp.Regexp, len(s.matchPatterns))
-	for i := range s.matchPatterns {
-		s.matchRegexes[i], err = regexp.Compile(s.matchPatterns[i])
-		if err != nil {
-			s.errorLogger.Fatalf("cannot parse pattern: %s\n", err)
-		}
-	}
-
-	retVal, err := s.executeSearch(targets)
+	retVal, err := s.ExecuteSearch(targets)
 	if err != nil {
 		s.errorLogger.Println(err)
 	}
